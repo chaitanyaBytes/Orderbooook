@@ -7,4 +7,4 @@ edition = "2024"
 tokio = { workspace = true }
 protocol = { path = "../protocol" }
 runtime = { path = "../runtime" }
-crossbeam-channel = "0.5.15"
+crossbeam-channel = { workspace = true }
