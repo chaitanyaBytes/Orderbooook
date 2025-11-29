@@ -25,7 +25,7 @@ pub struct CancelOrder {
     pub symbol: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Side {
     Buy,
     Sell,
@@ -102,7 +102,7 @@ pub struct Trade {
     pub symbol: String,
     pub quantity: u64,
     pub price: u64,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
