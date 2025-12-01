@@ -7,7 +7,10 @@ use crate::{
 };
 use chrono::Utc;
 use protocol::{OrderId, Price, Quantity, Side, UserId};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    os::unix::raw::pid_t,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderEntry {
@@ -104,12 +107,126 @@ impl OrderBook {
 
     pub(crate) fn match_market_order(
         &mut self,
-        order: &mut OrderEntry,
+        taker_order: &mut OrderEntry,
     ) -> Result<MatchResult, OrderBookError> {
-        order.validate_order()?;
+        taker_order.validate_order()?;
 
         let mut fills = Vec::<Fill>::new();
         let mut trades = Vec::<Trade>::new();
+
+        let mut prices_to_remove = HashSet::<Price>::new();
+
+        let is_buy_order = matches!(taker_order.side, Side::Buy);
+
+        let levels = if is_buy_order {
+            &mut self.asks
+        } else {
+            &mut self.bids
+        };
+
+        let mut book_changed = false;
+
+        while taker_order.remaining_quantity > 0 && !levels.is_empty() {
+            let (&price, level) = if is_buy_order {
+                match levels.iter_mut().next() {
+                    Some(v) => v,
+                    None => break,
+                }
+            } else {
+                match levels.iter_mut().next_back() {
+                    Some(v) => v,
+                    None => break,
+                }
+            };
+
+            while !level.is_empty() && taker_order.remaining_quantity > 0 {
+                let Some(&maker_order_id) = level.orders.front() else {
+                    break;
+                };
+
+                let maker_order = match self.orders.get_mut(&maker_order_id) {
+                    Some(m) => m,
+                    None => {
+                        level.orders.pop_front();
+                        continue;
+                    }
+                };
+
+                let fill_quantity = maker_order
+                    .remaining_quantity
+                    .min(taker_order.remaining_quantity);
+
+                maker_order.fill(fill_quantity)?;
+                taker_order.fill(fill_quantity)?;
+                level.remove_order(fill_quantity);
+
+                fills.push(Fill {
+                    order_id: maker_order_id,
+                    user_id: maker_order.user_id,
+                    side: maker_order.side.clone(),
+                    filled_price: price,
+                    filled_quantity: fill_quantity,
+                    remaining_quantity: maker_order.remaining_quantity,
+                });
+
+                fills.push(Fill {
+                    order_id: taker_order.order_id,
+                    user_id: taker_order.user_id,
+                    side: taker_order.side.clone(),
+                    filled_price: price,
+                    filled_quantity: fill_quantity,
+                    remaining_quantity: taker_order.remaining_quantity,
+                });
+
+                trades.push(Trade {
+                    trade_id: self.next_trade_id,
+                    maker_order_id: maker_order_id,
+                    maker_user_id: maker_order.user_id,
+                    taker_order_id: taker_order.order_id,
+                    taker_user_id: taker_order.user_id,
+                    quantity: fill_quantity,
+                    price,
+                    timestamp: Utc::now().timestamp_millis(),
+                });
+
+                self.next_trade_id = self.next_trade_id.saturating_add(1);
+
+                book_changed = true;
+
+                if maker_order.remaining_quantity == 0 {
+                    level.orders.pop_front();
+                    self.orders.remove(&maker_order_id);
+                }
+
+                if level.is_empty() {
+                    prices_to_remove.insert(price);
+                }
+            }
+
+            if taker_order.remaining_quantity == 0 {
+                break;
+            }
+
+            for price in &prices_to_remove {
+                levels.remove(price);
+            }
+        }
+
+        if book_changed {
+            self.depth_cache.is_latest = false;
+        }
+
+        let book_update = if book_changed {
+            Some(self.get_depth(20))
+        } else {
+            None
+        };
+
+        Ok(MatchResult {
+            fills,
+            trades,
+            book_update: book_update,
+        })
     }
 
     pub(crate) fn match_limit_order(
@@ -252,9 +369,8 @@ impl OrderBook {
             self.depth_cache.is_latest = false;
         }
 
-        // produce book_update optionally (you can build full Depth or top-N)
         let book_update = if book_changed {
-            Some(self.get_depth(20)) // convert Depth->BookUpdate in engine later
+            Some(self.get_depth(20))
         } else {
             None
         };
