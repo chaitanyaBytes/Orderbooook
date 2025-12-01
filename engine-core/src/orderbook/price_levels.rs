@@ -22,13 +22,12 @@ impl PriceLevel {
     #[inline]
     pub(crate) fn add_order(&mut self, order_id: OrderId, quantity: Quantity) {
         self.orders.push_back(order_id);
-        self.total_quantity += quantity;
+        self.total_quantity = self.total_quantity.saturating_add(quantity);
     }
 
     #[inline]
-    pub(crate) fn remove_order(&mut self, order_id: OrderId, quantity: Quantity) {
-        self.orders.retain(|o| *o != order_id);
-        self.total_quantity -= quantity;
+    pub(crate) fn remove_order(&mut self, quantity: Quantity) {
+        self.total_quantity = self.total_quantity.saturating_sub(quantity);
     }
 
     #[inline]
@@ -53,6 +52,6 @@ impl PriceLevel {
 
     #[inline]
     pub(crate) fn is_empty(&self) -> bool {
-        self.total_quantity == 0
+        self.total_quantity == 0 || self.orders.is_empty()
     }
 }

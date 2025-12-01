@@ -8,7 +8,7 @@ fn main() {
     let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
     let engine_handle = std::thread::spawn(move || {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new("SOL/USD");
         engine.run(order_rx, event_tx);
     });
 
@@ -16,7 +16,7 @@ fn main() {
         let order = Order {
             order_id: i,
             user_id: 1,
-            symbol: "ETH/USD".to_string(),
+            symbol: "SOL/USD".to_string(),
             side: Side::Sell,
             order_type: OrderType::Limit,
             quantity: 10 * i,

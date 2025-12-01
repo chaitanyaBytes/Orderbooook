@@ -10,7 +10,7 @@ mod tests {
 
     #[test]
     fn test_place_valid_order() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new("SOL/USD");
         let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn test_place_invalid_order_zero_quantity() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new("SOL/USD");
         let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn test_cancel_order() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new("SOL/USD");
         let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 

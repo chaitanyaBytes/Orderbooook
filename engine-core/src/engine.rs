@@ -72,7 +72,7 @@ impl Engine {
             return;
         }
 
-        if order.order_type == OrderType::Limit && order.price.is_none() {
+        if order.order_type == OrderType::Limit && order.price.unwrap_or(0) == 0 {
             let reject = Event::OrderReject(OrderReject {
                 order_id: order.order_id,
                 user_id: order.user_id,
@@ -97,7 +97,7 @@ impl Engine {
             return;
         }
 
-        let order_entry = OrderEntry::new(
+        let mut order_entry = OrderEntry::new(
             order.order_id,
             order.user_id,
             order.side,
@@ -106,8 +106,8 @@ impl Engine {
         );
 
         let result = match order.order_type {
-            OrderType::Market => self.orderbook.match_market_order(order_entry),
-            OrderType::Limit => self.orderbook.match_limit_order(order_entry),
+            OrderType::Market => self.orderbook.match_market_order(&mut order_entry),
+            OrderType::Limit => self.orderbook.match_limit_order(&mut order_entry),
         };
 
         let result = match result {
@@ -127,22 +127,24 @@ impl Engine {
             }
         };
 
+        let symbol = self.orderbook.get_symbol();
+
         for fill in result.fills {
-            let event = Event::Fill(fill.into_protocol(self.orderbook.get_symbol()));
+            let event = Event::Fill(fill.into_protocol(symbol));
             if let Err(e) = event_tx.send(event) {
                 eprintln!("[Engine] Failed to send event: {}", e);
             };
         }
 
         for trade in result.trades {
-            let event = Event::Trade(trade.into_protocol(self.orderbook.get_symbol()));
+            let event = Event::Trade(trade.into_protocol(symbol));
             if let Err(e) = event_tx.send(event) {
                 eprintln!("[Engine] Failed to send event: {}", e);
             };
         }
 
         if let Some(depth) = result.book_update {
-            let event = Event::BookUpdate(depth.into_protocol(self.orderbook.get_symbol()));
+            let event = Event::BookUpdate(depth.into_protocol(symbol));
             if let Err(e) = event_tx.send(event) {
                 eprintln!("[Engine] Failed to send event: {}", e);
             };

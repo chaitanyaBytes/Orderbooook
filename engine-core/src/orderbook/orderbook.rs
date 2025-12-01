@@ -2,12 +2,12 @@ use crate::{
     error::OrderBookError,
     orderbook::{
         price_levels::PriceLevel,
-        types::{CACHE_LIMIT, CachedDepth, Depth, MatchResult},
+        types::{CACHE_LIMIT, CachedDepth, Depth, Fill, MatchResult, Trade},
     },
 };
 use chrono::Utc;
 use protocol::{OrderId, Price, Quantity, Side, UserId};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderEntry {
@@ -65,7 +65,7 @@ impl OrderEntry {
             ));
         }
 
-        self.remaining_quantity -= quantity;
+        self.remaining_quantity = self.remaining_quantity.saturating_sub(quantity);
 
         Ok(())
     }
@@ -82,9 +82,8 @@ pub struct OrderBook {
     depth_cache: CachedDepth,
 
     // Track best bid/ask for quick access
-    best_bid: Option<Price>,
-    best_ask: Option<Price>,
-
+    // best_bid: Option<Price>,
+    // best_ask: Option<Price>,
     next_trade_id: u64,
 }
 
@@ -97,45 +96,174 @@ impl OrderBook {
             bids: BTreeMap::new(),
             orders: HashMap::new(),
             depth_cache: CachedDepth::new(),
-            best_bid: None,
-            best_ask: None,
-            next_trade_id: 0,
+            // best_bid: None,
+            // best_ask: None,
+            next_trade_id: 1,
         }
-    }
-
-    #[inline]
-    fn generate_trade_id(&mut self) -> u64 {
-        let id = self.next_trade_id;
-        self.next_trade_id += 1;
-        id
     }
 
     pub(crate) fn match_market_order(
         &mut self,
-        order: OrderEntry,
+        order: &mut OrderEntry,
     ) -> Result<MatchResult, OrderBookError> {
         order.validate_order()?;
 
-        let order_id = order.order_id;
-        let price = order.price;
-        let side = order.side.clone();
-        let quantity = order.quantity;
-
-        todo!()
+        let mut fills = Vec::<Fill>::new();
+        let mut trades = Vec::<Trade>::new();
     }
 
     pub(crate) fn match_limit_order(
         &mut self,
-        order: OrderEntry,
+        taker_order: &mut OrderEntry,
     ) -> Result<MatchResult, OrderBookError> {
-        order.validate_order()?;
+        taker_order.validate_order()?;
 
-        let order_id = order.order_id;
-        let price = order.price;
-        let side = order.side.clone();
-        let quantity = order.quantity;
+        let mut fills = Vec::<Fill>::new();
+        let mut trades = Vec::<Trade>::new();
 
-        todo!()
+        let is_buy_order = matches!(taker_order.side, Side::Buy);
+
+        let mut prices_to_remove = HashSet::<Price>::new();
+
+        let levels = if is_buy_order {
+            &mut self.asks
+        } else {
+            &mut self.bids
+        };
+
+        let price_keys: Vec<Price> = if is_buy_order {
+            levels
+                .range(..=taker_order.price)
+                .map(|(price, _)| *price)
+                .collect::<Vec<Price>>()
+        } else {
+            levels
+                .range(taker_order.price..)
+                .rev()
+                .map(|(price, _)| *price)
+                .collect::<Vec<Price>>()
+        };
+
+        let mut book_changed = false;
+
+        for price in price_keys {
+            if taker_order.remaining_quantity == 0 {
+                break;
+            }
+
+            let Some(level) = levels.get_mut(&price) else {
+                continue;
+            };
+
+            // Before matching, lazily pop any dead/cancelled orders at front
+            // loop {
+            //     if let Some(&front_id) = level.orders.front() {
+            //         if let Some(front_entry) = self.orders.get(&front_id) {
+            //             if front_entry.remaining_quantity == 0 {
+            //                 level.orders.pop_front();
+            //                 continue;
+            //             }
+            //         } else {
+            //             level.orders.pop_front();
+            //             continue;
+            //         }
+            //     }
+            //     break;
+            // }
+
+            while taker_order.remaining_quantity > 0 && !level.is_empty() {
+                let Some(&maker_order_id) = level.orders.front() else {
+                    continue;
+                };
+
+                let maker_order = match self.orders.get_mut(&maker_order_id) {
+                    Some(m) => m,
+                    None => {
+                        level.orders.pop_front();
+                        continue;
+                    }
+                };
+
+                let fill_quantity = maker_order
+                    .remaining_quantity
+                    .min(taker_order.remaining_quantity);
+
+                maker_order.fill(fill_quantity)?;
+                taker_order.fill(fill_quantity)?;
+                level.remove_order(fill_quantity);
+
+                fills.push(Fill {
+                    order_id: maker_order_id,
+                    user_id: maker_order.user_id,
+                    side: maker_order.side.clone(),
+                    filled_price: price,
+                    filled_quantity: fill_quantity,
+                    remaining_quantity: maker_order.remaining_quantity,
+                });
+
+                fills.push(Fill {
+                    order_id: taker_order.order_id,
+                    user_id: taker_order.user_id,
+                    side: taker_order.side.clone(),
+                    filled_price: price,
+                    filled_quantity: fill_quantity,
+                    remaining_quantity: taker_order.remaining_quantity,
+                });
+
+                trades.push(Trade {
+                    trade_id: self.next_trade_id,
+                    maker_order_id: maker_order_id,
+                    maker_user_id: maker_order.user_id,
+                    taker_order_id: taker_order.order_id,
+                    taker_user_id: taker_order.user_id,
+                    quantity: fill_quantity,
+                    price: price,
+                    timestamp: Utc::now().timestamp_millis(),
+                });
+
+                self.next_trade_id = self.next_trade_id.saturating_add(1);
+                book_changed = true;
+
+                if maker_order.remaining_quantity == 0 {
+                    level.orders.pop_front();
+                    self.orders.remove(&maker_order_id);
+
+                    if level.is_empty() {
+                        prices_to_remove.insert(price);
+                    }
+                }
+
+                if taker_order.remaining_quantity == 0 {
+                    break;
+                }
+            }
+        }
+
+        for price in &prices_to_remove {
+            levels.remove(price);
+        }
+
+        if taker_order.remaining_quantity > 0 {
+            self.add_order(taker_order.clone())?;
+            book_changed = true;
+        }
+
+        if book_changed {
+            self.depth_cache.is_latest = false;
+        }
+
+        // produce book_update optionally (you can build full Depth or top-N)
+        let book_update = if book_changed {
+            Some(self.get_depth(20)) // convert Depth->BookUpdate in engine later
+        } else {
+            None
+        };
+
+        Ok(MatchResult {
+            fills,
+            trades,
+            book_update: book_update,
+        })
     }
 
     #[inline]
@@ -145,7 +273,7 @@ impl OrderBook {
         let order_id = order.order_id;
         let price = order.price;
         let side = order.side.clone();
-        let quantity = order.quantity;
+        let quantity = order.remaining_quantity;
 
         self.orders.insert(order_id, order);
 
@@ -158,11 +286,6 @@ impl OrderBook {
                     new_level.add_order(order_id, quantity);
                     self.bids.insert(price, new_level);
                 }
-
-                // update the best bid
-                if self.best_bid.is_none() || price > self.best_bid.unwrap_or(0) {
-                    self.best_bid = Some(price);
-                }
             }
             Side::Sell => {
                 if let Some(level) = self.asks.get_mut(&price) {
@@ -172,11 +295,6 @@ impl OrderBook {
                     new_level.add_order(order_id, quantity);
                     self.asks.insert(price, new_level);
                 }
-
-                // update the best ask
-                if self.best_ask.is_none() || price < self.best_ask.unwrap_or(0) {
-                    self.best_ask = Some(price);
-                }
             }
         }
 
@@ -185,10 +303,7 @@ impl OrderBook {
     }
 
     #[inline]
-    pub(crate) fn remove_order(
-        &mut self,
-        order_id: OrderId,
-    ) -> Result<Option<OrderEntry>, OrderBookError> {
+    pub(crate) fn remove_order(&mut self, order_id: OrderId) -> Result<OrderEntry, OrderBookError> {
         let Some(order) = self.orders.remove(&order_id) else {
             return Err(OrderBookError::OrderNotFound(order_id));
         };
@@ -200,27 +315,19 @@ impl OrderBook {
         match side {
             Side::Buy => {
                 if let Some(level) = self.bids.get_mut(&price) {
-                    level.remove_order(order_id, remaining_quantity);
+                    level.remove_order(remaining_quantity);
 
                     if level.is_empty() {
                         self.bids.remove(&price);
-
-                        if self.best_bid == Some(price) {
-                            self.best_bid = self.bids.keys().next_back().copied();
-                        }
                     }
                 }
             }
             Side::Sell => {
                 if let Some(level) = self.asks.get_mut(&price) {
-                    level.remove_order(order_id, remaining_quantity);
+                    level.remove_order(remaining_quantity);
 
                     if level.is_empty() {
                         self.asks.remove(&price);
-
-                        if self.best_ask == Some(price) {
-                            self.best_ask = self.asks.keys().next().copied();
-                        }
                     }
                 }
             }
@@ -228,7 +335,7 @@ impl OrderBook {
 
         self.depth_cache.is_latest = false;
 
-        Ok(Some(order))
+        Ok(order)
     }
 
     pub(crate) fn get_depth(&mut self, limit: usize) -> Depth {
@@ -268,13 +375,13 @@ impl OrderBook {
     }
 
     #[inline]
-    pub(crate) fn best_bid(&self) -> Option<Price> {
-        self.best_bid
+    pub(crate) fn get_best_bid(&self) -> Option<Price> {
+        self.bids.keys().next_back().copied()
     }
 
     #[inline]
-    pub(crate) fn best_ask(&self) -> Option<Price> {
-        self.best_ask
+    pub(crate) fn get_best_ask(&self) -> Option<Price> {
+        self.asks.keys().next().copied()
     }
 
     #[inline]
@@ -295,12 +402,12 @@ impl OrderBook {
     #[inline]
     pub(crate) fn get_next_matchable_order(&self, side: Side) -> Option<OrderId> {
         match side {
-            Side::Buy => self.best_ask.and_then(|price| {
+            Side::Buy => self.get_best_ask().and_then(|price| {
                 self.asks
                     .get(&price)
                     .and_then(|level| level.orders.front().copied())
             }),
-            Side::Sell => self.best_bid.and_then(|price| {
+            Side::Sell => self.get_best_bid().and_then(|price| {
                 self.bids
                     .get(&price)
                     .and_then(|level| level.orders.front().copied())
@@ -322,7 +429,7 @@ impl OrderBook {
                 Side::Buy => {
                     if let Some(level) = self.bids.get_mut(&price) {
                         if remaining_before_fill == filled_qty {
-                            level.remove_order(order_id, filled_qty);
+                            level.remove_order(filled_qty);
                         } else {
                             level.total_quantity -= filled_qty;
                         }
@@ -331,7 +438,7 @@ impl OrderBook {
                 Side::Sell => {
                     if let Some(level) = self.asks.get_mut(&price) {
                         if remaining_before_fill == filled_qty {
-                            level.remove_order(order_id, filled_qty);
+                            level.remove_order(filled_qty);
                         } else {
                             level.total_quantity -= filled_qty;
                         }
