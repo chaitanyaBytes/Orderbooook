@@ -9,3 +9,5 @@ protocol = { path = "../protocol" }
 engine-core = { path = "../engine-core" }
 tokio = { workspace = true }
 crossbeam-channel = { workspace = true }
+net = { path = "../net" }
+ctrlc = "3.5.1"

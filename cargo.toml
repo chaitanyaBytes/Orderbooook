@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["engine-core", "gateway", "protocol", "runtime"]
+members = ["engine-core", "gateway", "net", "protocol", "runtime"]
 
 [workspace.dependencies]
 once_cell = "1.21.3"
