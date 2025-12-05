@@ -1,7 +1,8 @@
 use crossbeam_channel::{Receiver, Sender};
+use oneshot;
 use protocol::{
-    BookUpdate, CancelOrder, CancelReason, Event, Fill, Order, OrderAck, OrderCancelled,
-    OrderCommand, OrderReject, OrderType, PriceLevel, RejectReason, Trade,
+    CancelOrder, CancelReason, Event, Order, OrderAck, OrderCancelled, OrderCommand, OrderReject,
+    OrderResponse, OrderType, RejectReason,
 };
 
 use crate::orderbook::orderbook::{OrderBook, OrderEntry};
@@ -29,19 +30,25 @@ impl Engine {
         }
     }
 
-    pub fn run(&mut self, order_rx: Receiver<OrderCommand>, event_tx: Sender<Event>) {
+    pub fn run(
+        &mut self,
+        order_rx: Receiver<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+        event_tx: Sender<Event>,
+    ) {
         println!("[Engine] Starting matching engine...");
 
         loop {
             match order_rx.recv() {
-                Ok(OrderCommand::PlaceOrder(order)) => {
-                    println!("[Engine] Placing order: {order:?}");
-                    self.handle_place_order(order, &event_tx);
-                }
-                Ok(OrderCommand::CancelOrder(cancel_order)) => {
-                    println!("[Engine] Cancelling order: {cancel_order:?}");
-                    self.handle_cancel_order(cancel_order, &event_tx);
-                }
+                Ok((order_command, reply_tx)) => match order_command {
+                    OrderCommand::PlaceOrder(order) => {
+                        println!("[Engine] Placing order: {order:?}");
+                        self.handle_place_order(order, reply_tx, &event_tx);
+                    }
+                    OrderCommand::CancelOrder(cancel_order) => {
+                        println!("[Engine] Cancelling order: {cancel_order:?}");
+                        self.handle_cancel_order(cancel_order, reply_tx, &event_tx);
+                    }
+                },
                 Err(e) => {
                     println!("[Engine] Error receiving order command: {e}");
                     break;
@@ -52,7 +59,12 @@ impl Engine {
         println!("[Engine] Engine shutting down");
     }
 
-    fn handle_place_order(&mut self, order: Order, event_tx: &Sender<Event>) {
+    fn handle_place_order(
+        &mut self,
+        order: Order,
+        reply_tx: oneshot::Sender<OrderResponse>,
+        event_tx: &Sender<Event>,
+    ) {
         println!(
             "[Engine] Processing order: {} from user {}",
             order.order_id, order.user_id
@@ -65,6 +77,14 @@ impl Engine {
                 reason: RejectReason::InvalidQuantity,
                 message: "Quantity must be greater than 0".to_string(),
             });
+
+            if let Err(e) = reply_tx.send(OrderResponse::Reject {
+                order_id: order.order_id,
+                reason: RejectReason::InvalidQuantity,
+                message: "Quantity must be greater than 0".to_string(),
+            }) {
+                eprintln!("[Engine] Failed to send event: {}", e);
+            };
 
             if let Err(e) = event_tx.send(reject) {
                 eprintln!("[Engine] Failed to send event: {}", e);
@@ -80,6 +100,14 @@ impl Engine {
                 message: "Price is required for limit orders".to_string(),
             });
 
+            if let Err(e) = reply_tx.send(OrderResponse::Reject {
+                order_id: order.order_id,
+                reason: RejectReason::InvalidOrder,
+                message: "Price is required for limit orders".to_string(),
+            }) {
+                eprintln!("[Engine] Failed to send event: {}", e);
+            };
+
             if let Err(e) = event_tx.send(reject) {
                 eprintln!("[Engine] Failed to send event: {}", e);
             };
@@ -89,8 +117,17 @@ impl Engine {
         let ack = Event::OrderAck(OrderAck {
             order_id: order.order_id,
             user_id: order.user_id,
-            symbol: order.symbol,
+            symbol: order.symbol.clone(),
         });
+
+        if let Err(e) = reply_tx.send(OrderResponse::Ack {
+            order_id: order.order_id,
+            user_id: order.user_id,
+            symbol: order.symbol,
+        }) {
+            eprintln!("[Engine] Failed to send event: {}", e);
+            return;
+        }
 
         if let Err(e) = event_tx.send(ack) {
             eprintln!("[Engine] Failed to send event: {}", e);
@@ -154,16 +191,31 @@ impl Engine {
         return;
     }
 
-    fn handle_cancel_order(&mut self, cancel_order: CancelOrder, event_tx: &Sender<Event>) {
+    fn handle_cancel_order(
+        &mut self,
+        cancel_order: CancelOrder,
+        reply_tx: oneshot::Sender<OrderResponse>,
+        event_tx: &Sender<Event>,
+    ) {
         println!(
             "[Engine] Cancelling order: {} from user {}",
             cancel_order.order_id, cancel_order.user_id
         );
 
+        if let Err(e) = reply_tx.send(OrderResponse::Ack {
+            order_id: cancel_order.order_id,
+            user_id: cancel_order.user_id,
+            symbol: cancel_order.symbol,
+        }) {
+            eprintln!("[Engine] Failed to send event: {}", e);
+            return;
+        }
+
         let cancelled_order = match self.orderbook.remove_order(cancel_order.order_id) {
             Ok(order) => order,
             Err(e) => {
                 eprintln!("[Engine] Failed to remove order: {}", e);
+
                 let reject = Event::OrderReject(OrderReject {
                     order_id: cancel_order.order_id,
                     user_id: cancel_order.user_id,

@@ -14,3 +14,4 @@ runtime = { path = "../runtime" }
 thiserror = "2.0.17"
 futures-util = "0.3"
 actix-web = "4.12.1"
+oneshot = { workspace = true }

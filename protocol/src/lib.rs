@@ -8,6 +8,20 @@ pub enum OrderCommand {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum OrderResponse {
+    Ack {
+        order_id: u64,
+        user_id: u64,
+        symbol: String,
+    },
+    Reject {
+        order_id: u64,
+        reason: RejectReason,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub order_id: u64,
     pub user_id: u64,

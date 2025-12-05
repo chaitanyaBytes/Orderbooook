@@ -2,7 +2,8 @@ use std::net::TcpListener;
 
 use actix_web::{self, App, HttpServer, web};
 use crossbeam_channel::Sender;
-use protocol::OrderCommand;
+use oneshot;
+use protocol::{OrderCommand, OrderResponse};
 
 use crate::http::routes::ping;
 
@@ -12,14 +13,14 @@ pub struct HttpServerApp {
 }
 
 pub struct HttpServerAppState {
-    pub order_tx: Sender<OrderCommand>,
+    pub order_tx: Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
 }
 
 impl HttpServerApp {
     pub fn build(
         host: &str,
         port: &str,
-        order_tx: Sender<OrderCommand>,
+        order_tx: Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
     ) -> Result<Self, std::io::Error> {
         let address = format!("{}:{}", host, port);
         let listener = TcpListener::bind(address)?;

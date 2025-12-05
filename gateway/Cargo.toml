@@ -11,3 +11,4 @@ tokio = { workspace = true }
 crossbeam-channel = { workspace = true }
 net = { path = "../net" }
 ctrlc = "3.5.1"
+oneshot = { workspace = true }

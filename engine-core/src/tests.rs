@@ -1,17 +1,48 @@
 use crate::engine::Engine;
 use crossbeam_channel;
+use oneshot;
 use protocol::{
-    CancelOrder, CancelReason, Event, Order, OrderCommand, OrderType, RejectReason, Side,
+    CancelOrder, CancelReason, Event, Order, OrderCommand, OrderResponse, OrderType, RejectReason,
+    Side,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn send_order_and_get_response(
+        order_tx: &crossbeam_channel::Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+        order: Order,
+    ) -> OrderResponse {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        order_tx
+            .send((OrderCommand::PlaceOrder(order), reply_tx))
+            .unwrap();
+        std::thread::spawn(move || runtime::RUNTIME.block_on(reply_rx))
+            .join()
+            .unwrap()
+            .unwrap()
+    }
+
+    fn send_cancel_and_get_response(
+        order_tx: &crossbeam_channel::Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+        cancel: CancelOrder,
+    ) -> OrderResponse {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        order_tx
+            .send((OrderCommand::CancelOrder(cancel), reply_tx))
+            .unwrap();
+        std::thread::spawn(move || runtime::RUNTIME.block_on(reply_rx))
+            .join()
+            .unwrap()
+            .unwrap()
+    }
+
     #[test]
     fn test_place_valid_limit_order() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -28,15 +59,36 @@ mod tests {
             price: Some(50000),
         };
 
-        order_tx.send(OrderCommand::PlaceOrder(order)).unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        order_tx
+            .send((OrderCommand::PlaceOrder(order), reply_tx))
+            .unwrap();
 
+        // Wait for response from oneshot channel
+        let response = std::thread::spawn(move || runtime::RUNTIME.block_on(reply_rx))
+            .join()
+            .unwrap()
+            .unwrap();
+
+        match response {
+            OrderResponse::Ack {
+                order_id,
+                user_id,
+                symbol,
+            } => {
+                assert_eq!(order_id, 1);
+                assert_eq!(user_id, 100);
+                assert_eq!(symbol, "SOL/USD");
+            }
+            OrderResponse::Reject { .. } => panic!("Expected Ack, got Reject"),
+        }
+
+        // Also check event channel
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(Event::OrderAck(ack)) => {
                 assert_eq!(ack.order_id, 1);
-                assert_eq!(ack.user_id, 100);
-                assert_eq!(ack.symbol, "SOL/USD");
             }
-            other => panic!("Expected OrderAck, got {:?}", other),
+            other => panic!("Expected OrderAck event, got {:?}", other),
         }
 
         drop(order_tx);
@@ -46,8 +98,9 @@ mod tests {
     #[test]
     fn test_place_valid_market_order() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
-        let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
+        let (event_tx, _event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
             engine.run(order_rx, event_tx);
@@ -63,13 +116,21 @@ mod tests {
             price: None,
         };
 
-        order_tx.send(OrderCommand::PlaceOrder(order)).unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        order_tx
+            .send((OrderCommand::PlaceOrder(order), reply_tx))
+            .unwrap();
 
-        match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(Event::OrderAck(ack)) => {
-                assert_eq!(ack.order_id, 1);
+        let response = std::thread::spawn(move || runtime::RUNTIME.block_on(reply_rx))
+            .join()
+            .unwrap()
+            .unwrap();
+
+        match response {
+            OrderResponse::Ack { order_id, .. } => {
+                assert_eq!(order_id, 1);
             }
-            other => panic!("Expected OrderAck, got {:?}", other),
+            OrderResponse::Reject { .. } => panic!("Expected Ack, got Reject"),
         }
 
         drop(order_tx);
@@ -79,8 +140,9 @@ mod tests {
     #[test]
     fn test_reject_zero_quantity() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
-        let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
+        let (event_tx, _event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
             engine.run(order_rx, event_tx);
@@ -96,15 +158,24 @@ mod tests {
             price: Some(50000),
         };
 
-        order_tx.send(OrderCommand::PlaceOrder(order)).unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        order_tx
+            .send((OrderCommand::PlaceOrder(order), reply_tx))
+            .unwrap();
 
-        match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(Event::OrderReject(reject)) => {
-                assert_eq!(reject.order_id, 1);
-                assert_eq!(reject.user_id, 100);
-                assert!(matches!(reject.reason, RejectReason::InvalidQuantity));
+        let response = std::thread::spawn(move || runtime::RUNTIME.block_on(reply_rx))
+            .join()
+            .unwrap()
+            .unwrap();
+
+        match response {
+            OrderResponse::Reject {
+                order_id, reason, ..
+            } => {
+                assert_eq!(order_id, 1);
+                assert!(matches!(reason, RejectReason::InvalidQuantity));
             }
-            other => panic!("Expected OrderReject, got {:?}", other),
+            OrderResponse::Ack { .. } => panic!("Expected Reject, got Ack"),
         }
 
         drop(order_tx);
@@ -114,8 +185,9 @@ mod tests {
     #[test]
     fn test_reject_limit_order_without_price() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
-        let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
+        let (event_tx, _event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
             engine.run(order_rx, event_tx);
@@ -131,14 +203,24 @@ mod tests {
             price: None, // Missing price for limit order
         };
 
-        order_tx.send(OrderCommand::PlaceOrder(order)).unwrap();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        order_tx
+            .send((OrderCommand::PlaceOrder(order), reply_tx))
+            .unwrap();
 
-        match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(Event::OrderReject(reject)) => {
-                assert_eq!(reject.order_id, 1);
-                assert!(matches!(reject.reason, RejectReason::InvalidOrder));
+        let response = std::thread::spawn(move || runtime::RUNTIME.block_on(reply_rx))
+            .join()
+            .unwrap()
+            .unwrap();
+
+        match response {
+            OrderResponse::Reject {
+                order_id, reason, ..
+            } => {
+                assert_eq!(order_id, 1);
+                assert!(matches!(reason, RejectReason::InvalidOrder));
             }
-            other => panic!("Expected OrderReject, got {:?}", other),
+            OrderResponse::Ack { .. } => panic!("Expected Reject, got Ack"),
         }
 
         drop(order_tx);
@@ -148,8 +230,9 @@ mod tests {
     #[test]
     fn test_reject_limit_order_with_zero_price() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
-        let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
+        let (event_tx, _event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
             engine.run(order_rx, event_tx);
@@ -165,14 +248,15 @@ mod tests {
             price: Some(0), // Zero price
         };
 
-        order_tx.send(OrderCommand::PlaceOrder(order)).unwrap();
-
-        match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
-            Ok(Event::OrderReject(reject)) => {
-                assert_eq!(reject.order_id, 1);
-                assert!(matches!(reject.reason, RejectReason::InvalidOrder));
+        let response = send_order_and_get_response(&order_tx, order);
+        match response {
+            OrderResponse::Reject {
+                order_id, reason, ..
+            } => {
+                assert_eq!(order_id, 1);
+                assert!(matches!(reason, RejectReason::InvalidOrder));
             }
-            other => panic!("Expected OrderReject, got {:?}", other),
+            OrderResponse::Ack { .. } => panic!("Expected Reject, got Ack"),
         }
 
         drop(order_tx);
@@ -182,7 +266,8 @@ mod tests {
     #[test]
     fn test_buy_limit_matches_sell_limit_full_fill() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -199,8 +284,8 @@ mod tests {
             quantity: 50,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
-        let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
+        let _ = send_order_and_get_response(&order_tx, sell_order);
+        let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack event
 
         // Place buy order that matches (taker)
         let buy_order = Order {
@@ -212,7 +297,7 @@ mod tests {
             quantity: 50,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect events: OrderAck, Fill (maker), Fill (taker), Trade
         let mut events = Vec::new();
@@ -264,7 +349,8 @@ mod tests {
     #[test]
     fn test_sell_limit_matches_buy_limit_full_fill() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -281,7 +367,7 @@ mod tests {
             quantity: 50,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
 
         // Place sell order that matches (taker)
@@ -294,7 +380,7 @@ mod tests {
             quantity: 50,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
 
         // Collect events
         let mut events = Vec::new();
@@ -323,7 +409,8 @@ mod tests {
     #[test]
     fn test_partial_fill_maker_remaining() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -340,7 +427,7 @@ mod tests {
             quantity: 100,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
 
         // Place buy order for 30 units (taker, partial fill)
@@ -353,7 +440,7 @@ mod tests {
             quantity: 30,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect events
         let mut events = Vec::new();
@@ -397,7 +484,8 @@ mod tests {
     #[test]
     fn test_partial_fill_taker_remaining() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -414,7 +502,7 @@ mod tests {
             quantity: 30,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
 
         // Place buy order for 100 units (taker, will partially fill)
@@ -427,7 +515,7 @@ mod tests {
             quantity: 100,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect events
         let mut events = Vec::new();
@@ -459,7 +547,8 @@ mod tests {
     #[test]
     fn test_market_order_matches_limit_order() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -476,7 +565,7 @@ mod tests {
             quantity: 50,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
 
         // Place market buy order (taker)
@@ -489,7 +578,7 @@ mod tests {
             quantity: 30,
             price: None,
         };
-        order_tx.send(OrderCommand::PlaceOrder(market_buy)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, market_buy);
 
         // Collect events
         let mut events = Vec::new();
@@ -519,7 +608,8 @@ mod tests {
     #[test]
     fn test_market_order_no_liquidity() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -536,7 +626,7 @@ mod tests {
             quantity: 30,
             price: None,
         };
-        order_tx.send(OrderCommand::PlaceOrder(market_buy)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, market_buy);
 
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(Event::OrderAck(ack)) => {
@@ -567,7 +657,8 @@ mod tests {
     #[test]
     fn test_order_rests_on_book() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -584,7 +675,7 @@ mod tests {
             quantity: 50,
             price: Some(60000), // High price
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
 
         // Should only get OrderAck, no fills
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -615,7 +706,8 @@ mod tests {
     #[test]
     fn test_fifo_priority_same_price() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -633,7 +725,7 @@ mod tests {
                 quantity: 10,
                 price: Some(50000),
             };
-            order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+            let _ = send_order_and_get_response(&order_tx, sell_order);
             let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
         }
 
@@ -647,7 +739,7 @@ mod tests {
             quantity: 30,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect all events
         let mut events = Vec::new();
@@ -685,7 +777,8 @@ mod tests {
     #[test]
     fn test_price_priority_best_price_first() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -703,7 +796,7 @@ mod tests {
             quantity: 10,
             price: Some(51000), // Higher price
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell1)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell1);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1));
 
         // Lower price second (better)
@@ -716,7 +809,7 @@ mod tests {
             quantity: 10,
             price: Some(50000), // Lower price (better for buyer)
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell2)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell2);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1));
 
         // Buy order that can match both
@@ -729,7 +822,7 @@ mod tests {
             quantity: 10,
             price: Some(52000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect events
         let mut events = Vec::new();
@@ -768,7 +861,8 @@ mod tests {
     #[test]
     fn test_cancel_resting_order() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -785,7 +879,7 @@ mod tests {
             quantity: 50,
             price: Some(60000), // High price, won't match
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
 
         // Cancel it
@@ -794,7 +888,7 @@ mod tests {
             user_id: 100,
             symbol: "SOL/USD".to_string(),
         };
-        order_tx.send(OrderCommand::CancelOrder(cancel)).unwrap();
+        let _ = send_cancel_and_get_response(&order_tx, cancel);
 
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
             Ok(Event::BookUpdate(b)) => {
@@ -821,7 +915,8 @@ mod tests {
     #[test]
     fn test_cancel_non_existent_order() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -834,7 +929,7 @@ mod tests {
             user_id: 100,
             symbol: "SOL/USD".to_string(),
         };
-        order_tx.send(OrderCommand::CancelOrder(cancel)).unwrap();
+        let _ = send_cancel_and_get_response(&order_tx, cancel);
 
         // Should get OrderReject
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -853,7 +948,8 @@ mod tests {
     #[test]
     fn test_cancel_partially_filled_order() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -870,7 +966,7 @@ mod tests {
             quantity: 100,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, sell_order);
         let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
 
         // Place buy order that partially fills it
@@ -883,7 +979,7 @@ mod tests {
             quantity: 30,
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Consume fill events
         let mut events = Vec::new();
@@ -899,7 +995,7 @@ mod tests {
             user_id: 100,
             symbol: "SOL/USD".to_string(),
         };
-        order_tx.send(OrderCommand::CancelOrder(cancel)).unwrap();
+        let _ = send_cancel_and_get_response(&order_tx, cancel);
 
         // Should get OrderCancelled
         match event_rx.recv_timeout(std::time::Duration::from_secs(1)) {
@@ -917,7 +1013,8 @@ mod tests {
     #[test]
     fn test_single_order_matches_multiple_orders() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -935,7 +1032,7 @@ mod tests {
                 quantity: 20,
                 price: Some(50000),
             };
-            order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+            let _ = send_order_and_get_response(&order_tx, sell_order);
             let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
         }
 
@@ -949,7 +1046,7 @@ mod tests {
             quantity: 60, // Matches all 3
             price: Some(50000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect all events
         let mut events = Vec::new();
@@ -995,7 +1092,8 @@ mod tests {
     #[test]
     fn test_single_order_matches_multiple_levels() {
         let mut engine = Engine::new("SOL/USD");
-        let (order_tx, order_rx) = crossbeam_channel::unbounded::<OrderCommand>();
+        let (order_tx, order_rx) =
+            crossbeam_channel::unbounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>();
         let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
         let handle = std::thread::spawn(move || {
@@ -1013,7 +1111,7 @@ mod tests {
                 quantity: 20,
                 price: Some(50000 + i as u64 * 1000),
             };
-            order_tx.send(OrderCommand::PlaceOrder(sell_order)).unwrap();
+            let _ = send_order_and_get_response(&order_tx, sell_order);
             let _ = event_rx.recv_timeout(std::time::Duration::from_secs(1)); // Ack
         }
 
@@ -1027,7 +1125,7 @@ mod tests {
             quantity: 80, // Matches all 3
             price: Some(53000),
         };
-        order_tx.send(OrderCommand::PlaceOrder(buy_order)).unwrap();
+        let _ = send_order_and_get_response(&order_tx, buy_order);
 
         // Collect all events
         let mut events = Vec::new();

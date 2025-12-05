@@ -1,13 +1,15 @@
 use crossbeam_channel;
 use engine_core::engine::Engine;
 use net::http::app::HttpServerApp;
-use protocol::{Event, OrderCommand};
+use oneshot;
+use protocol::{Event, OrderCommand, OrderResponse};
 use runtime::RUNTIME;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn main() {
-    let (order_tx, order_rx) = crossbeam_channel::bounded::<OrderCommand>(1000);
+    let (order_tx, order_rx) =
+        crossbeam_channel::bounded::<(OrderCommand, oneshot::Sender<OrderResponse>)>(1000);
     let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
 
     // Start engine
