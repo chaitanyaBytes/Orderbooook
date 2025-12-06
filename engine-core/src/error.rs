@@ -1,4 +1,4 @@
-use protocol::OrderId;
+use protocol::types::OrderId;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

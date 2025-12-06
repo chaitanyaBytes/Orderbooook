@@ -1,9 +1,9 @@
 use crate::engine::Engine;
 use crossbeam_channel;
+use net::http::models::orders::OrderResponse;
 use oneshot;
-use protocol::{
-    CancelOrder, CancelReason, Event, Order, OrderCommand, OrderResponse, OrderType, RejectReason,
-    Side,
+use protocol::types::{
+    CancelOrder, CancelReason, Event, Order, OrderCommand, OrderType, RejectReason, Side,
 };
 
 #[cfg(test)]

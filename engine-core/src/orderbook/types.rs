@@ -1,4 +1,4 @@
-use protocol::{OrderId, Price, Quantity, Side, UserId};
+use protocol::types::{OrderId, Price, Quantity, Side, UserId};
 
 pub const CACHE_LIMIT: usize = 25;
 
@@ -16,8 +16,8 @@ pub(crate) struct Trade {
 
 impl Trade {
     #[inline]
-    pub(crate) fn into_protocol(self, symbol: &str) -> protocol::Trade {
-        protocol::Trade {
+    pub(crate) fn into_protocol(self, symbol: &str) -> protocol::types::Trade {
+        protocol::types::Trade {
             symbol: symbol.to_string(),
             trade_id: self.trade_id,
             maker_order_id: self.maker_order_id,
@@ -43,8 +43,8 @@ pub(crate) struct Fill {
 
 impl Fill {
     #[inline]
-    pub(crate) fn into_protocol(self, symbol: &str) -> protocol::Fill {
-        protocol::Fill {
+    pub(crate) fn into_protocol(self, symbol: &str) -> protocol::types::Fill {
+        protocol::types::Fill {
             order_id: self.order_id,
             user_id: self.user_id,
             symbol: symbol.to_string(),
@@ -64,20 +64,20 @@ pub struct Depth {
 
 impl Depth {
     #[inline]
-    pub(crate) fn into_protocol(self, symbol: &str) -> protocol::BookUpdate {
+    pub(crate) fn into_protocol(self, symbol: &str) -> protocol::types::BookUpdate {
         let bids = self
             .bids
             .into_iter()
-            .map(|(price, quantity)| protocol::PriceLevel { price, quantity })
+            .map(|(price, quantity)| protocol::types::PriceLevel { price, quantity })
             .collect();
 
         let asks = self
             .asks
             .into_iter()
-            .map(|(price, quantity)| protocol::PriceLevel { price, quantity })
+            .map(|(price, quantity)| protocol::types::PriceLevel { price, quantity })
             .collect();
 
-        protocol::BookUpdate {
+        protocol::types::BookUpdate {
             symbol: symbol.to_string(),
             bids,
             asks,

@@ -6,7 +6,7 @@ use crate::{
     },
 };
 use chrono::Utc;
-use protocol::{OrderId, Price, Quantity, Side, UserId};
+use protocol::types::{OrderId, Price, Quantity, Side, UserId};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,11 +1,11 @@
-use std::net::TcpListener;
+use std::{net::TcpListener, sync::atomic::AtomicU64};
 
 use actix_web::{self, App, HttpServer, web};
 use crossbeam_channel::Sender;
 use oneshot;
-use protocol::{OrderCommand, OrderResponse};
+use protocol::types::OrderCommand;
 
-use crate::http::routes::ping;
+use crate::http::{models::orders::OrderResponse, routes::config};
 
 pub struct HttpServerApp {
     pub port: u16,
@@ -14,6 +14,7 @@ pub struct HttpServerApp {
 
 pub struct HttpServerAppState {
     pub order_tx: Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+    pub order_id: AtomicU64,
 }
 
 impl HttpServerApp {
@@ -26,16 +27,16 @@ impl HttpServerApp {
         let listener = TcpListener::bind(address)?;
         let port = listener.local_addr().unwrap().port();
 
-        let app_state = web::Data::new(HttpServerAppState { order_tx });
+        let app_state = web::Data::new(HttpServerAppState {
+            order_tx,
+            order_id: AtomicU64::new(1),
+        });
 
-        let server = HttpServer::new(move || {
-            App::new()
-                .app_data(app_state.clone())
-                .service(web::scope("/api/v1").service(ping))
-        })
-        .listen(listener)
-        .unwrap()
-        .run();
+        let server =
+            HttpServer::new(move || App::new().app_data(app_state.clone()).configure(config))
+                .listen(listener)
+                .unwrap()
+                .run();
 
         Ok(Self { port, server })
     }

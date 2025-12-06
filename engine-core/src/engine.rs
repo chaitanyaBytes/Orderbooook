@@ -1,11 +1,12 @@
 use crossbeam_channel::{Receiver, Sender};
 use oneshot;
-use protocol::{
+use protocol::types::{
     CancelOrder, CancelReason, Event, Order, OrderAck, OrderCancelled, OrderCommand, OrderReject,
-    OrderResponse, OrderType, RejectReason,
+    OrderType, RejectReason,
 };
 
 use crate::orderbook::orderbook::{OrderBook, OrderEntry};
+use net::http::models::orders::OrderResponse;
 
 /// synchronous matching engine
 /// runs in a dedicated thread, no async, deteministic, locks free

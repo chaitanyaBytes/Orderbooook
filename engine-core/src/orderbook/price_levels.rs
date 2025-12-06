@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use protocol::{OrderId, Price, Quantity};
+use protocol::types::{OrderId, Price, Quantity};
 
 #[derive(Debug, Clone, Default)]
 pub struct PriceLevel {

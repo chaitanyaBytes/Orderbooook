@@ -1,8 +1,9 @@
 use crossbeam_channel;
 use engine_core::engine::Engine;
 use net::http::app::HttpServerApp;
+use net::http::models::orders::OrderResponse;
 use oneshot;
-use protocol::{Event, OrderCommand, OrderResponse};
+use protocol::types::{Event, OrderCommand};
 use runtime::RUNTIME;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
