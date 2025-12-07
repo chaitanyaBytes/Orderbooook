@@ -11,6 +11,7 @@ pub type TradeId = u64;
 pub enum OrderCommand {
     PlaceOrder(Order),
     CancelOrder(CancelOrder),
+    GetDepth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +162,16 @@ impl Order {
             order_type,
             quantity,
             price,
+        }
+    }
+}
+
+impl CancelOrder {
+    pub fn new(order_id: OrderId, user_id: UserId, symbol: String) -> Self {
+        Self {
+            order_id,
+            user_id,
+            symbol,
         }
     }
 }

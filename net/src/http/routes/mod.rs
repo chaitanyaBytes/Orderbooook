@@ -1,4 +1,4 @@
-use crate::http::handlers::{cancel_order, get_depth, ping, place_order};
+use crate::http::handlers::orders::{cancel_order, get_depth, ping, place_order};
 use actix_web::web;
 
 pub fn config(cfg: &mut web::ServiceConfig) {

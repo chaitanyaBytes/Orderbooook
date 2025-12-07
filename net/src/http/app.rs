@@ -5,7 +5,7 @@ use crossbeam_channel::Sender;
 use oneshot;
 use protocol::types::OrderCommand;
 
-use crate::http::{models::orders::OrderResponse, routes::config};
+use crate::http::{models::orders::CommandResponse, routes::config};
 
 pub struct HttpServerApp {
     pub port: u16,
@@ -13,7 +13,7 @@ pub struct HttpServerApp {
 }
 
 pub struct HttpServerAppState {
-    pub order_tx: Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+    pub order_tx: Sender<(OrderCommand, oneshot::Sender<CommandResponse>)>,
     pub order_id: AtomicU64,
 }
 
@@ -21,7 +21,7 @@ impl HttpServerApp {
     pub fn build(
         host: &str,
         port: &str,
-        order_tx: Sender<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+        order_tx: Sender<(OrderCommand, oneshot::Sender<CommandResponse>)>,
     ) -> Result<Self, std::io::Error> {
         let address = format!("{}:{}", host, port);
         let listener = TcpListener::bind(address)?;

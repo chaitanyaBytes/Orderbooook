@@ -6,7 +6,9 @@ use protocol::types::{
 };
 
 use crate::orderbook::orderbook::{OrderBook, OrderEntry};
-use net::http::models::orders::OrderResponse;
+use net::http::models::orders::{
+    CancelOrderResponse, CommandResponse, DepthResponse, OrderResponse,
+};
 
 /// synchronous matching engine
 /// runs in a dedicated thread, no async, deteministic, locks free
@@ -33,7 +35,7 @@ impl Engine {
 
     pub fn run(
         &mut self,
-        order_rx: Receiver<(OrderCommand, oneshot::Sender<OrderResponse>)>,
+        order_rx: Receiver<(OrderCommand, oneshot::Sender<CommandResponse>)>,
         event_tx: Sender<Event>,
     ) {
         println!("[Engine] Starting matching engine...");
@@ -49,6 +51,16 @@ impl Engine {
                         println!("[Engine] Cancelling order: {cancel_order:?}");
                         self.handle_cancel_order(cancel_order, reply_tx, &event_tx);
                     }
+                    OrderCommand::GetDepth => {
+                        println!("[Engine] Getting depth");
+                        let depth = self.orderbook.get_depth(20);
+                        if let Err(e) = reply_tx.send(CommandResponse::Depth(DepthResponse {
+                            bids: depth.bids,
+                            asks: depth.asks,
+                        })) {
+                            eprintln!("[Engine] Failed to send depth response: {}", e);
+                        };
+                    }
                 },
                 Err(e) => {
                     println!("[Engine] Error receiving order command: {e}");
@@ -63,7 +75,7 @@ impl Engine {
     fn handle_place_order(
         &mut self,
         order: Order,
-        reply_tx: oneshot::Sender<OrderResponse>,
+        reply_tx: oneshot::Sender<CommandResponse>,
         event_tx: &Sender<Event>,
     ) {
         println!(
@@ -79,11 +91,11 @@ impl Engine {
                 message: "Quantity must be greater than 0".to_string(),
             });
 
-            if let Err(e) = reply_tx.send(OrderResponse::Reject {
+            if let Err(e) = reply_tx.send(CommandResponse::PlaceOrder(OrderResponse::Reject {
                 order_id: order.order_id,
                 reason: RejectReason::InvalidQuantity,
                 message: "Quantity must be greater than 0".to_string(),
-            }) {
+            })) {
                 eprintln!("[Engine] Failed to send event: {}", e);
             };
 
@@ -101,11 +113,11 @@ impl Engine {
                 message: "Price is required for limit orders".to_string(),
             });
 
-            if let Err(e) = reply_tx.send(OrderResponse::Reject {
+            if let Err(e) = reply_tx.send(CommandResponse::PlaceOrder(OrderResponse::Reject {
                 order_id: order.order_id,
                 reason: RejectReason::InvalidOrder,
                 message: "Price is required for limit orders".to_string(),
-            }) {
+            })) {
                 eprintln!("[Engine] Failed to send event: {}", e);
             };
 
@@ -121,11 +133,11 @@ impl Engine {
             symbol: order.symbol.clone(),
         });
 
-        if let Err(e) = reply_tx.send(OrderResponse::Ack {
+        if let Err(e) = reply_tx.send(CommandResponse::PlaceOrder(OrderResponse::Ack {
             order_id: order.order_id,
             user_id: order.user_id,
             symbol: order.symbol,
-        }) {
+        })) {
             eprintln!("[Engine] Failed to send event: {}", e);
             return;
         }
@@ -195,7 +207,7 @@ impl Engine {
     fn handle_cancel_order(
         &mut self,
         cancel_order: CancelOrder,
-        reply_tx: oneshot::Sender<OrderResponse>,
+        reply_tx: oneshot::Sender<CommandResponse>,
         event_tx: &Sender<Event>,
     ) {
         println!(
@@ -203,11 +215,11 @@ impl Engine {
             cancel_order.order_id, cancel_order.user_id
         );
 
-        if let Err(e) = reply_tx.send(OrderResponse::Ack {
+        if let Err(e) = reply_tx.send(CommandResponse::CancelOrder(CancelOrderResponse::Ack {
             order_id: cancel_order.order_id,
             user_id: cancel_order.user_id,
             symbol: cancel_order.symbol,
-        }) {
+        })) {
             eprintln!("[Engine] Failed to send event: {}", e);
             return;
         }
