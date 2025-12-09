@@ -1,7 +1,7 @@
 use protocol::types::{OrderId, Price, PriceLevel, Quantity, UserId};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Event {
     Trade(TradeEvent),
     Depth(DepthEvent),

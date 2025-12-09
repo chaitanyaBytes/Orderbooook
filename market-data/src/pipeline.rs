@@ -1,4 +1,4 @@
-use crate::{aggregator::Aggregator, publisher::Publisher, transformer::Transformer, types::Event};
+use crate::{aggregator::Aggregator, publisher::publisher::Publisher, transformer::Transformer};
 use crossbeam_channel::Receiver;
 use protocol::types::Event as EngineEvent;
 

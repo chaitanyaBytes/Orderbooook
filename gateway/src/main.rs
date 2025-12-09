@@ -1,5 +1,8 @@
 use crossbeam_channel;
 use engine_core::engine::Engine;
+use market_data::{
+    pipeline::MarketDataPipeline, publisher::publisher::Publisher, publisher::redis::RedisPublisher,
+};
 use net::http::app::HttpServerApp;
 use net::http::models::orders::CommandResponse;
 use oneshot;
@@ -7,7 +10,7 @@ use protocol::types::{Event, OrderCommand};
 use runtime::RUNTIME;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-
+use std::vec;
 fn main() {
     let (order_tx, order_rx) =
         crossbeam_channel::bounded::<(OrderCommand, oneshot::Sender<CommandResponse>)>(1000);
@@ -23,6 +26,11 @@ fn main() {
     let http_server = HttpServerApp::build("127.0.0.1", "8080", order_tx.clone())
         .unwrap_or_else(|e| panic!("Failed to build HTTP server: {}", e));
 
+    let redis_pub = RedisPublisher::new("redis://127.0.0.1:6379", 10).expect("redis pool");
+    let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(redis_pub)];
+
+    let mut market_data_pipeline = MarketDataPipeline::new(publishers);
+
     println!("Gateway starting...");
     println!("HTTP server: http://127.0.0.1:{}", http_server.port);
     println!("Engine: Running");
@@ -32,6 +40,11 @@ fn main() {
         if let Err(e) = http_server.run_until_stopped().await {
             eprintln!("HTTP server error: {}", e);
         }
+    });
+
+    // Running market data pipeline to publish data to redis
+    let market_data_handle = std::thread::spawn(move || {
+        market_data_pipeline.run(event_rx);
     });
 
     let running = Arc::new(AtomicBool::new(true));
@@ -49,7 +62,9 @@ fn main() {
     }
 
     drop(order_tx);
+
     engine_handle.join().unwrap();
+    market_data_handle.join().unwrap();
     RUNTIME.block_on(http_handle).unwrap();
 
     println!("Gateway stopped");

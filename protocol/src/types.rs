@@ -8,7 +8,7 @@ pub type Quantity = u64;
 pub type TradeId = u64;
 
 // Inbound events (client -> engine)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum OrderCommand {
     PlaceOrder(Order),
     CancelOrder(CancelOrder),
