@@ -6,6 +6,7 @@ pub type UserId = u64;
 pub type Price = u64;
 pub type Quantity = u64;
 pub type TradeId = u64;
+pub type Symbol = String;
 
 // Inbound events (client -> engine)
 #[derive(Debug, Serialize, Deserialize)]
@@ -56,7 +57,7 @@ pub enum Event {
     BookUpdate(BookUpdate),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, EnumStringify)]
 pub enum OrderStatus {
     Pending,
     PartiallyFilled,

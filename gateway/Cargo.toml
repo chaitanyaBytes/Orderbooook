@@ -13,3 +13,4 @@ net = { path = "../net" }
 ctrlc = "3.5.1"
 oneshot = { workspace = true }
 market-data = { path = "../market-data" }
+persistence = { path = "../persistence" }

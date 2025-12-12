@@ -7,6 +7,7 @@ use net::http::app::HttpServerApp;
 use net::http::models::orders::CommandResponse;
 use net::ws::app::WsServerApp;
 use oneshot;
+use persistence::writer::PersistenceWriter;
 use protocol::types::{Event, OrderCommand};
 use runtime::RUNTIME;
 use std::sync::Arc;
@@ -16,6 +17,24 @@ fn main() {
     let (order_tx, order_rx) =
         crossbeam_channel::bounded::<(OrderCommand, oneshot::Sender<CommandResponse>)>(1000);
     let (event_tx, event_rx) = crossbeam_channel::unbounded::<Event>();
+
+    let (market_data_tx, market_data_rx) = crossbeam_channel::unbounded::<Event>();
+    let (persistence_tx, persistence_rx) = crossbeam_channel::bounded::<Event>(10_000);
+
+    // Broadcast events from engine to both market data and persistence
+    let broadcaster_handle = std::thread::spawn(move || {
+        while let Ok(event) = event_rx.recv() {
+            if let Err(e) = market_data_tx.send(event.clone()) {
+                eprintln!("[Broadcaster] Market data channel closed: {}", e);
+                break;
+            }
+
+            if let Err(e) = persistence_tx.send(event) {
+                eprintln!("[Broadcaster] Persistence channel closed: {}", e);
+                break;
+            }
+        }
+    });
 
     // Start engine
     let engine_handle = std::thread::spawn(move || {
@@ -61,7 +80,15 @@ fn main() {
 
     // Running market data pipeline to publish data to redis
     let market_data_handle = std::thread::spawn(move || {
-        market_data_pipeline.run(event_rx);
+        market_data_pipeline.run(market_data_rx);
+    });
+
+    // Initialize and run persistence writer
+    let persistence_handle = RUNTIME.spawn(async move {
+        let mut persistence_writer = PersistenceWriter::new("127.0.0.1", "orderbook")
+            .await
+            .unwrap_or_else(|e| panic!("Failed to initialize persistence writer: {}", e));
+        persistence_writer.run(persistence_rx).await;
     });
 
     let running = Arc::new(AtomicBool::new(true));
@@ -81,7 +108,9 @@ fn main() {
     drop(order_tx);
 
     engine_handle.join().unwrap();
+    broadcaster_handle.join().unwrap();
     market_data_handle.join().unwrap();
+    RUNTIME.block_on(persistence_handle).unwrap();
     RUNTIME.block_on(http_handle).unwrap();
     RUNTIME.block_on(ws_handle).unwrap();
 
